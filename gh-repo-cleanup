@@ -1,0 +1,143 @@
+#!/usr/bin/env bash
+#
+# gh-repo-cleanup — простий CLI для масового чищення старих/непотрібних
+# репозиторіїв на GitHub. Обгортка над GitHub CLI (gh).
+#
+# Команди:
+#   gh-repo-cleanup list  [-o file]        Вивести всі репозиторії у файл для перегляду
+#   gh-repo-cleanup delete [-f file]       Видалити репозиторії зі списку
+#   gh-repo-cleanup help                  Показати цю довідку
+#
+# Вимоги: встановлений і авторизований GitHub CLI (https://cli.github.com)
+#   Для видалення потрібен додатковий scope:
+#     gh auth refresh -h github.com -s delete_repo
+
+set -euo pipefail
+
+PROG="gh-repo-cleanup"
+
+usage() {
+  cat <<EOF
+$PROG — масове чищення репозиторіїв на GitHub
+
+Використання:
+  $PROG list [-o FILE]        Вивести всі ваші репозиторії, відсортовані
+                               за датою останнього оновлення (FILE за
+                               замовчуванням: repos_review.txt)
+  $PROG delete [-f FILE]       Видалити репозиторії, перелічені у FILE
+                               (по одному "власник/назва" на рядок;
+                               FILE за замовчуванням: to_delete.txt)
+  $PROG help                   Показати цю довідку
+
+Приклад робочого процесу:
+  $PROG list -o repos_review.txt
+  # відкрити repos_review.txt, скопіювати потрібні рядки у to_delete.txt
+  $PROG delete -f to_delete.txt
+EOF
+}
+
+require_gh() {
+  if ! command -v gh >/dev/null 2>&1; then
+    echo "Помилка: не знайдено GitHub CLI (gh)." >&2
+    echo "Встановіть його: https://cli.github.com" >&2
+    exit 1
+  fi
+  if ! gh auth status >/dev/null 2>&1; then
+    echo "Помилка: gh не авторизований. Виконайте: gh auth login" >&2
+    exit 1
+  fi
+}
+
+cmd_list() {
+  local out="repos_review.txt"
+  while getopts "o:" opt; do
+    case "$opt" in
+      o) out="$OPTARG" ;;
+      *) usage; exit 1 ;;
+    esac
+  done
+
+  require_gh
+
+  echo "Отримую список репозиторіїв..."
+  gh repo list --limit 1000 \
+    --json name,owner,updatedAt,isFork,isArchived,stargazerCount \
+    --jq '.[] | "\(.updatedAt)\t\(.owner.login)/\(.name)\tfork=\(.isFork)\tarchived=\(.isArchived)\tstars=\(.stargazerCount)"' \
+    | sort > "$out"
+
+  echo "Готово! Список збережено у $out"
+  echo "Всього репозиторіїв: $(wc -l < "$out")"
+  echo ""
+  echo "Відкрийте $out — найстаріші/неактивні репозиторії зверху (за датою)."
+}
+
+cmd_delete() {
+  local file="to_delete.txt"
+  while getopts "f:" opt; do
+    case "$opt" in
+      f) file="$OPTARG" ;;
+      *) usage; exit 1 ;;
+    esac
+  done
+
+  require_gh
+
+  if [[ ! -f "$file" ]]; then
+    echo "Не знайдено файл $file." >&2
+    echo "Створіть його: у кожному рядку — власник/назва репозиторію для видалення." >&2
+    exit 1
+  fi
+
+  mapfile -t repos < <(grep -v '^\s*$' "$file")
+
+  if [[ ${#repos[@]} -eq 0 ]]; then
+    echo "Файл $file порожній — немає що видаляти."
+    exit 0
+  fi
+
+  echo "Буде видалено ${#repos[@]} репозиторіїв:"
+  printf '  - %s\n' "${repos[@]}"
+  echo ""
+  read -rp "Підтверджуєте видалення? Введіть YES щоб продовжити: " confirm
+
+  if [[ "$confirm" != "YES" ]]; then
+    echo "Скасовано."
+    exit 0
+  fi
+
+  local failed=()
+  for repo in "${repos[@]}"; do
+    echo "Видаляю $repo ..."
+    if gh repo delete "$repo" --yes; then
+      echo "  OK"
+    else
+      echo "  ПОМИЛКА при видаленні $repo"
+      failed+=("$repo")
+    fi
+  done
+
+  echo ""
+  echo "Готово. Успішно видалено: $(( ${#repos[@]} - ${#failed[@]} )) з ${#repos[@]}"
+  if [[ ${#failed[@]} -gt 0 ]]; then
+    echo "Не вдалося видалити:"
+    printf '  - %s\n' "${failed[@]}"
+  fi
+}
+
+main() {
+  local cmd="${1:-help}"
+  [[ $# -gt 0 ]] && shift
+
+  case "$cmd" in
+    list) cmd_list "$@" ;;
+    delete) cmd_delete "$@" ;;
+    help|-h|--help) usage ;;
+    *)
+      echo "Невідома команда: $cmd" >&2
+      usage
+      exit 1
+      ;;
+  esac
+}
+
+main "$@"
