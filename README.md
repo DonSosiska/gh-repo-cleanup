@@ -15,7 +15,7 @@ gh auth refresh -h github.com -s delete_repo   # окремий scope для в�
 Клонуйте репозиторій і зробіть скрипт виконуваним:
 
 ```bash
-git clone <your-repo-url>
+git clone https://github.com/DonSosiska/gh-repo-cleanup.git
 cd gh-repo-cleanup
 chmod +x gh-repo-cleanup
 ```
